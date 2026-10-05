@@ -28,7 +28,7 @@ console.log('🚀 Sistem başlatıldı. Her 30 saniyede bir Trendyol kontrol edi
 async function checkTrendyolOrders() {
   try {
     const endDate = Date.now();
-    const startDate = endDate - (7 * 24 * 60 * 60 * 1000); 
+    const startDate = endDate - (2 * 60 * 60 * 1000); 
     
     const url = `https://api.trendyol.com/sapigw/suppliers/${TRENDYOL_SUPPLIER_ID}/orders?startDate=${startDate}&endDate=${endDate}&orderByField=PackageLastModifiedDate&orderByDirection=DESC`;
 
