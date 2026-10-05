@@ -10,7 +10,7 @@ const {
   SHOPIFY_ACCESS_TOKEN
 } = process.env;
 
-const SHOPIFY_LOCATION_ID = 'BURAYA_DEPO_ID_GELECEK';
+const SHOPIFY_LOCATION_ID = '114560139553';
 const trendyolAuth = Buffer.from(`${TRENDYOL_API_KEY}:${TRENDYOL_API_SECRET}`).toString('base64');
 const processedOrders = new Set();
 
