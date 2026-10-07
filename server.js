@@ -22,7 +22,7 @@ http.createServer((req, res) => {
   console.log(`🌐 Uyandırma sunucusu ${port} portunda başlatıldı.`);
 });
 
-console.log('🚀 Sistem başlatıldı. Her 30 saniyede bir Trendyol kontrol edilecek...');
+console.log('🚀 Sistem başlatıldı. Her 30 saniyede bir Trendyol siparişleri kontrol edilecek...');
 
 async function checkTrendyolOrders() {
   try {
@@ -51,7 +51,7 @@ async function checkTrendyolOrders() {
       } else if (status === 'Cancelled') {
         console.log(`🚨 İPTAL BULUNDU! Paket No: ${packageId}. Stoklar geri yüklenip sipariş iptal ediliyor...`);
         await restoreShopifyStock(pkg.lines);
-        await cancelShopifyOrder(pkg); // YENİ: Siparişi Shopify panelinde de iptal et
+        await cancelShopifyOrder(pkg); 
         processedOrders.add(actionKey);
       } else if (status === 'Shipped') {
         console.log(`📦 KARGOLANDI! Paket No: ${packageId}. Shopify'da sessizce güncelleniyor...`);
@@ -59,7 +59,7 @@ async function checkTrendyolOrders() {
         processedOrders.add(actionKey);
       } else if (status === 'Delivered') {
         console.log(`🏠 TESLİM EDİLDİ! Paket No: ${packageId}. Shopify'a etiket ekleniyor...`);
-        await markOrderAsDelivered(pkg); // YENİ: Siparişe 'Teslim Edildi' etiketi ekle
+        await markOrderAsDelivered(pkg); 
         processedOrders.add(actionKey);
       }
     }
@@ -92,10 +92,7 @@ async function createShopifyOrder(pkg) {
     };
 
     const response = await axios.post(url, shopifyOrderData, {
-      headers: {
-        'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
-        'Content-Type': 'application/json'
-      }
+      headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN, 'Content-Type': 'application/json' }
     });
     console.log(`✅ Sipariş Shopify'a eklendi! Shopify ID: ${response.data.order.id}`);
   } catch (error) {
@@ -119,7 +116,7 @@ async function restoreShopifyStock(canceledItems) {
           available_adjustment: item.quantity
         }, { headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN, 'Content-Type': 'application/json' } });
         
-        console.log(`✅ ${item.barcode} barkodlu üründen ${item.quantity} adet stoğa eklendi.`);
+        console.log(`✅ İptal edilen ${item.barcode} barkodlu üründen ${item.quantity} adet stoğa geri eklendi.`);
       }
     } catch (error) {
       console.error(`❌ Stok hatası:`, error.response?.data || error.message);
@@ -130,7 +127,6 @@ async function restoreShopifyStock(canceledItems) {
 async function fulfillShopifyOrder(pkg) {
   try {
     const headers = { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN, 'Content-Type': 'application/json' };
-
     const ordersUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders.json?status=unfulfilled`;
     const ordersRes = await axios.get(ordersUrl, { headers });
     const shopifyOrder = ordersRes.data.orders.find(order => order.tags.includes(pkg.orderNumber.toString()));
@@ -143,20 +139,15 @@ async function fulfillShopifyOrder(pkg) {
 
     if (!fulfillmentOrder) return;
 
-    const trackingCompany = pkg.cargoProviderName || 'Kargo Firması';
-    const trackingNumber = pkg.cargoTrackingNumber || pkg.cargoTrackingLink || 'Bilinmiyor';
-
     const fulfillData = {
       fulfillment: {
         message: "Trendyol siparişi kargoya verildi.",
         notify_customer: false,
         tracking_info: {
-          number: trackingNumber,
-          company: trackingCompany
+          number: pkg.cargoTrackingNumber || pkg.cargoTrackingLink || 'Bilinmiyor',
+          company: pkg.cargoProviderName || 'Kargo Firması'
         },
-        line_items_by_fulfillment_order: [
-          { fulfillment_order_id: fulfillmentOrder.id }
-        ]
+        line_items_by_fulfillment_order: [{ fulfillment_order_id: fulfillmentOrder.id }]
       }
     };
 
@@ -167,7 +158,6 @@ async function fulfillShopifyOrder(pkg) {
   }
 }
 
-// 🛑 YENİ: İPTAL MODÜLÜ
 async function cancelShopifyOrder(pkg) {
   try {
     const headers = { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN, 'Content-Type': 'application/json' };
@@ -177,17 +167,13 @@ async function cancelShopifyOrder(pkg) {
 
     if (!shopifyOrder) return;
 
-    const cancelUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders/${shopifyOrder.id}/cancel.json`;
-    // email: false diyerek müşteriye iptal maili gitmesini engelliyoruz
-    await axios.post(cancelUrl, { email: false }, { headers });
-    
+    await axios.post(`https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders/${shopifyOrder.id}/cancel.json`, { email: false }, { headers });
     console.log(`✅ Sipariş panelde İptal Edildi olarak güncellendi. Shopify ID: ${shopifyOrder.id}`);
   } catch (error) {
     console.error(`❌ Sipariş iptal işlemi başarısız:`, error.response?.data || error.message);
   }
 }
 
-// 🏠 YENİ: TESLİM EDİLDİ MODÜLÜ (Etiket Ekler)
 async function markOrderAsDelivered(pkg) {
   try {
     const headers = { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN, 'Content-Type': 'application/json' };
@@ -195,15 +181,10 @@ async function markOrderAsDelivered(pkg) {
     const ordersRes = await axios.get(ordersUrl, { headers });
     const shopifyOrder = ordersRes.data.orders.find(order => order.tags.includes(pkg.orderNumber.toString()));
 
-    if (!shopifyOrder) return;
-    if (shopifyOrder.tags.includes("Teslim Edildi")) return; // Zaten etiketliyse tekrar ekleme
+    if (!shopifyOrder || shopifyOrder.tags.includes("Teslim Edildi")) return;
 
-    const updateUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders/${shopifyOrder.id}.json`;
-    await axios.put(updateUrl, {
-      order: {
-        id: shopifyOrder.id,
-        tags: `${shopifyOrder.tags}, Teslim Edildi` // Mevcut etiketleri silmeden yeni etiket ekle
-      }
+    await axios.put(`https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders/${shopifyOrder.id}.json`, {
+      order: { id: shopifyOrder.id, tags: `${shopifyOrder.tags}, Teslim Edildi` }
     }, { headers });
     
     console.log(`✅ Siparişe 'Teslim Edildi' etiketi başarıyla eklendi! Shopify ID: ${shopifyOrder.id}`);
@@ -212,5 +193,59 @@ async function markOrderAsDelivered(pkg) {
   }
 }
 
-checkTrendyolOrders();
-setInterval(checkTrendyolOrders, 30000);
+// 🔄 YENİ: TRENDYOL -> SHOPIFY STOK EŞİTLEME MODÜLÜ
+async function syncTrendyolStockToShopify() {
+  try {
+    console.log('🔄 Trendyol genel stokları kontrol ediliyor ve Shopify ile eşitleniyor...');
+    let page = 0;
+    let totalPages = 1;
+    
+    while (page < totalPages) {
+      const url = `https://api.trendyol.com/sapigw/suppliers/${TRENDYOL_SUPPLIER_ID}/products?page=${page}&size=50`;
+      const response = await axios.get(url, {
+        headers: { 'Authorization': `Basic ${trendyolAuth}` }
+      });
+      
+      const products = response.data.content;
+      totalPages = response.data.totalPages || 1;
+      
+      for (const product of products) {
+        const barcode = product.barcode;
+        const quantity = product.quantity;
+        
+        // Shopify'da barkod ile ürünü bul
+        const searchUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/products.json?sku=${barcode}`;
+        const searchRes = await axios.get(searchUrl, { headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN } });
+        
+        if (searchRes.data.products.length > 0) {
+          const inventoryItemId = searchRes.data.products[0].variants[0].inventory_item_id;
+          
+          // Shopify'a stok miktarını "SET" (Ayarla) komutuyla mutlak değer olarak gönder
+          const setUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/inventory_levels/set.json`;
+          await axios.post(setUrl, {
+            inventory_item_id: inventoryItemId,
+            location_id: SHOPIFY_LOCATION_ID,
+            available: quantity
+          }, { headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN, 'Content-Type': 'application/json' } });
+        }
+        
+        // Shopify API sınırlarına takılmamak için her ürün sonrası 300 milisaniye bekle
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+      page++;
+    }
+    console.log('✅ Stok eşitleme turu tamamlandı.');
+  } catch (error) {
+    console.error('❌ Stok eşitleme hatası:', error.response?.data || error.message);
+  }
+}
+
+// BOTUN ZAMANLAYICILARI
+checkTrendyolOrders(); 
+setInterval(checkTrendyolOrders, 30000); // Her 30 saniyede bir siparişleri kontrol et
+
+// Bot ilk açıldığında 5 saniye bekle, sonra ilk stok eşitlemesini yap ve her 5 dakikada bir tekrarla
+setTimeout(() => {
+  syncTrendyolStockToShopify();
+  setInterval(syncTrendyolStockToShopify, 5 * 60 * 1000); // 5 dakika = 5 * 60 * 1000 ms
+}, 5000);
