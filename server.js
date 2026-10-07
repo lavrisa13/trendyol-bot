@@ -49,12 +49,17 @@ async function checkTrendyolOrders() {
         await createShopifyOrder(pkg);
         processedOrders.add(actionKey);
       } else if (status === 'Cancelled') {
-        console.log(`🚨 İPTAL BULUNDU! Paket No: ${packageId}. Stoklar geri yükleniyor...`);
+        console.log(`🚨 İPTAL BULUNDU! Paket No: ${packageId}. Stoklar geri yüklenip sipariş iptal ediliyor...`);
         await restoreShopifyStock(pkg.lines);
+        await cancelShopifyOrder(pkg); // YENİ: Siparişi Shopify panelinde de iptal et
         processedOrders.add(actionKey);
       } else if (status === 'Shipped') {
         console.log(`📦 KARGOLANDI! Paket No: ${packageId}. Shopify'da sessizce güncelleniyor...`);
         await fulfillShopifyOrder(pkg);
+        processedOrders.add(actionKey);
+      } else if (status === 'Delivered') {
+        console.log(`🏠 TESLİM EDİLDİ! Paket No: ${packageId}. Shopify'a etiket ekleniyor...`);
+        await markOrderAsDelivered(pkg); // YENİ: Siparişe 'Teslim Edildi' etiketi ekle
         processedOrders.add(actionKey);
       }
     }
@@ -80,7 +85,6 @@ async function createShopifyOrder(pkg) {
         customer: {
           first_name: pkg.invoiceAddress.firstName,
           last_name: pkg.invoiceAddress.lastName
-          // E-posta aktarımı tamamen iptal edildi
         },
         financial_status: 'paid',
         tags: `Trendyol, ${pkg.orderNumber}`
@@ -125,28 +129,19 @@ async function restoreShopifyStock(canceledItems) {
 
 async function fulfillShopifyOrder(pkg) {
   try {
-    const headers = {
-      'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
-      'Content-Type': 'application/json'
-    };
+    const headers = { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN, 'Content-Type': 'application/json' };
 
     const ordersUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders.json?status=unfulfilled`;
     const ordersRes = await axios.get(ordersUrl, { headers });
     const shopifyOrder = ordersRes.data.orders.find(order => order.tags.includes(pkg.orderNumber.toString()));
 
-    if (!shopifyOrder) {
-      console.log(`⚠️ Shopify'da ${pkg.orderNumber} etiketli açık sipariş bulunamadı.`);
-      return;
-    }
+    if (!shopifyOrder) return;
 
     const foUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders/${shopifyOrder.id}/fulfillment_orders.json`;
     const foRes = await axios.get(foUrl, { headers });
     const fulfillmentOrder = foRes.data.fulfillment_orders.find(fo => fo.status === 'open' || fo.status === 'in_progress');
 
-    if (!fulfillmentOrder) {
-      console.log(`⚠️ Shopify Sipariş ID: ${shopifyOrder.id} için uygun fulfillment kaydı yok.`);
-      return;
-    }
+    if (!fulfillmentOrder) return;
 
     const trackingCompany = pkg.cargoProviderName || 'Kargo Firması';
     const trackingNumber = pkg.cargoTrackingNumber || pkg.cargoTrackingLink || 'Bilinmiyor';
@@ -154,7 +149,7 @@ async function fulfillShopifyOrder(pkg) {
     const fulfillData = {
       fulfillment: {
         message: "Trendyol siparişi kargoya verildi.",
-        notify_customer: false, // <-- MAİL ATILMASI ENGELLENDİ
+        notify_customer: false,
         tracking_info: {
           number: trackingNumber,
           company: trackingCompany
@@ -165,11 +160,55 @@ async function fulfillShopifyOrder(pkg) {
       }
     };
 
-    await axios.post(fulfillUrl, fulfillData, { headers });
-    console.log(`✅ Sipariş kargolandı olarak işaretlendi (Mail gönderilmedi). Shopify ID: ${shopifyOrder.id}`);
-    
+    await axios.post(`https://${SHOPIFY_STORE_URL}/admin/api/2024-01/fulfillments.json`, fulfillData, { headers });
+    console.log(`✅ Sipariş kargolandı olarak işaretlendi. Shopify ID: ${shopifyOrder.id}`);
   } catch (error) {
     console.error(`❌ Kargo güncellemesi başarısız oldu:`, JSON.stringify(error.response?.data || error.message, null, 2));
+  }
+}
+
+// 🛑 YENİ: İPTAL MODÜLÜ
+async function cancelShopifyOrder(pkg) {
+  try {
+    const headers = { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN, 'Content-Type': 'application/json' };
+    const ordersUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders.json?status=any`;
+    const ordersRes = await axios.get(ordersUrl, { headers });
+    const shopifyOrder = ordersRes.data.orders.find(order => order.tags.includes(pkg.orderNumber.toString()));
+
+    if (!shopifyOrder) return;
+
+    const cancelUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders/${shopifyOrder.id}/cancel.json`;
+    // email: false diyerek müşteriye iptal maili gitmesini engelliyoruz
+    await axios.post(cancelUrl, { email: false }, { headers });
+    
+    console.log(`✅ Sipariş panelde İptal Edildi olarak güncellendi. Shopify ID: ${shopifyOrder.id}`);
+  } catch (error) {
+    console.error(`❌ Sipariş iptal işlemi başarısız:`, error.response?.data || error.message);
+  }
+}
+
+// 🏠 YENİ: TESLİM EDİLDİ MODÜLÜ (Etiket Ekler)
+async function markOrderAsDelivered(pkg) {
+  try {
+    const headers = { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN, 'Content-Type': 'application/json' };
+    const ordersUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders.json?status=any`;
+    const ordersRes = await axios.get(ordersUrl, { headers });
+    const shopifyOrder = ordersRes.data.orders.find(order => order.tags.includes(pkg.orderNumber.toString()));
+
+    if (!shopifyOrder) return;
+    if (shopifyOrder.tags.includes("Teslim Edildi")) return; // Zaten etiketliyse tekrar ekleme
+
+    const updateUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders/${shopifyOrder.id}.json`;
+    await axios.put(updateUrl, {
+      order: {
+        id: shopifyOrder.id,
+        tags: `${shopifyOrder.tags}, Teslim Edildi` // Mevcut etiketleri silmeden yeni etiket ekle
+      }
+    }, { headers });
+    
+    console.log(`✅ Siparişe 'Teslim Edildi' etiketi başarıyla eklendi! Shopify ID: ${shopifyOrder.id}`);
+  } catch (error) {
+    console.error(`❌ Teslim Edildi etiketi eklenemedi:`, error.response?.data || error.message);
   }
 }
 
