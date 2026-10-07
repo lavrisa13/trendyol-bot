@@ -45,9 +45,14 @@ async function checkTrendyolOrders() {
       if (processedOrders.has(actionKey)) continue;
 
       if (status === 'Created' || status === 'Picking') {
-        console.log(`🎉 YENİ SİPARİŞ BULUNDU! Paket No: ${packageId}. Shopify'a aktarılıyor...`);
-        await createShopifyOrder(pkg);
-        processedOrders.add(actionKey);
+        // Hafıza kontrolü: Bu paketi daha önce Shopify'a aktarmayı denedik mi?
+        const creationKey = `${packageId}_created_in_shopify`;
+        if (!processedOrders.has(creationKey)) {
+          console.log(`🔍 Sipariş kontrol ediliyor. Paket No: ${packageId}`);
+          await createShopifyOrder(pkg);
+          processedOrders.add(creationKey);
+        }
+        processedOrders.add(actionKey); // Statü değişimini işlendi say
       } else if (status === 'Cancelled') {
         console.log(`🚨 İPTAL BULUNDU! Paket No: ${packageId}. Stoklar geri yüklenip sipariş iptal ediliyor...`);
         await restoreShopifyStock(pkg.lines);
@@ -70,6 +75,19 @@ async function checkTrendyolOrders() {
 
 async function createShopifyOrder(pkg) {
   try {
+    const headers = { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN, 'Content-Type': 'application/json' };
+    
+    // YENİ EKLENEN KISIM: SİPARİŞ ZATEN VAR MI KONTROLÜ
+    const checkUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders.json?status=any`;
+    const checkRes = await axios.get(checkUrl, { headers });
+    const exists = checkRes.data.orders.some(order => order.tags.includes(pkg.orderNumber.toString()));
+
+    if (exists) {
+      console.log(`⚠️ Paket No: ${pkg.orderNumber} zaten Shopify'da mevcut. Çift sipariş engellendi.`);
+      return;
+    }
+
+    // Eğer yoksa yeni sipariş oluştur
     const url = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders.json`;
     
     const lineItems = pkg.lines.map(item => ({
@@ -91,10 +109,8 @@ async function createShopifyOrder(pkg) {
       }
     };
 
-    const response = await axios.post(url, shopifyOrderData, {
-      headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN, 'Content-Type': 'application/json' }
-    });
-    console.log(`✅ Sipariş Shopify'a eklendi! Shopify ID: ${response.data.order.id}`);
+    const response = await axios.post(url, shopifyOrderData, { headers });
+    console.log(`✅ YENİ Sipariş Shopify'a eklendi! Shopify ID: ${response.data.order.id}`);
   } catch (error) {
     console.error(`❌ Sipariş Shopify'a eklenemedi:`, JSON.stringify(error.response?.data || error.message, null, 2));
   }
@@ -193,7 +209,7 @@ async function markOrderAsDelivered(pkg) {
   }
 }
 
-// 🔄 YENİ: TRENDYOL -> SHOPIFY STOK EŞİTLEME MODÜLÜ
+// 🔄 TRENDYOL -> SHOPIFY STOK EŞİTLEME MODÜLÜ
 async function syncTrendyolStockToShopify() {
   try {
     console.log('🔄 Trendyol genel stokları kontrol ediliyor ve Shopify ile eşitleniyor...');
@@ -213,14 +229,12 @@ async function syncTrendyolStockToShopify() {
         const barcode = product.barcode;
         const quantity = product.quantity;
         
-        // Shopify'da barkod ile ürünü bul
         const searchUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/products.json?sku=${barcode}`;
         const searchRes = await axios.get(searchUrl, { headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN } });
         
         if (searchRes.data.products.length > 0) {
           const inventoryItemId = searchRes.data.products[0].variants[0].inventory_item_id;
           
-          // Shopify'a stok miktarını "SET" (Ayarla) komutuyla mutlak değer olarak gönder
           const setUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/inventory_levels/set.json`;
           await axios.post(setUrl, {
             inventory_item_id: inventoryItemId,
@@ -228,8 +242,6 @@ async function syncTrendyolStockToShopify() {
             available: quantity
           }, { headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN, 'Content-Type': 'application/json' } });
         }
-        
-        // Shopify API sınırlarına takılmamak için her ürün sonrası 300 milisaniye bekle
         await new Promise(resolve => setTimeout(resolve, 300));
       }
       page++;
@@ -247,5 +259,5 @@ setInterval(checkTrendyolOrders, 30000); // Her 30 saniyede bir siparişleri kon
 // Bot ilk açıldığında 5 saniye bekle, sonra ilk stok eşitlemesini yap ve her 5 dakikada bir tekrarla
 setTimeout(() => {
   syncTrendyolStockToShopify();
-  setInterval(syncTrendyolStockToShopify, 5 * 60 * 1000); // 5 dakika = 5 * 60 * 1000 ms
+  setInterval(syncTrendyolStockToShopify, 5 * 60 * 1000); 
 }, 5000);
