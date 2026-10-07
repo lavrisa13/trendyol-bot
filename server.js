@@ -1,6 +1,6 @@
 require('dotenv').config();
 const axios = require('axios');
-const http = require('http'); // Render için eklendi
+const http = require('http');
 
 const {
   TRENDYOL_SUPPLIER_ID,
@@ -14,7 +14,6 @@ const SHOPIFY_LOCATION_ID = '114560139553';
 const trendyolAuth = Buffer.from(`${TRENDYOL_API_KEY}:${TRENDYOL_API_SECRET}`).toString('base64');
 const processedOrders = new Set();
 
-// 🟢 RENDER'I KANDIRMAK İÇİN SAHTE WEB SUNUCUSU
 const port = process.env.PORT || 3000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -53,6 +52,10 @@ async function checkTrendyolOrders() {
         console.log(`🚨 İPTAL BULUNDU! Paket No: ${packageId}. Stoklar geri yükleniyor...`);
         await restoreShopifyStock(pkg.lines);
         processedOrders.add(actionKey);
+      } else if (status === 'Shipped') {
+        console.log(`📦 KARGOLANDI! Paket No: ${packageId}. Shopify'da sessizce güncelleniyor...`);
+        await fulfillShopifyOrder(pkg);
+        processedOrders.add(actionKey);
       }
     }
   } catch (error) {
@@ -76,8 +79,8 @@ async function createShopifyOrder(pkg) {
         line_items: lineItems,
         customer: {
           first_name: pkg.invoiceAddress.firstName,
-          last_name: pkg.invoiceAddress.lastName,
-          email: pkg.customerEmail || 'no-email@trendyol.com'
+          last_name: pkg.invoiceAddress.lastName
+          // E-posta aktarımı tamamen iptal edildi
         },
         financial_status: 'paid',
         tags: `Trendyol, ${pkg.orderNumber}`
@@ -117,6 +120,56 @@ async function restoreShopifyStock(canceledItems) {
     } catch (error) {
       console.error(`❌ Stok hatası:`, error.response?.data || error.message);
     }
+  }
+}
+
+async function fulfillShopifyOrder(pkg) {
+  try {
+    const headers = {
+      'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+      'Content-Type': 'application/json'
+    };
+
+    const ordersUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders.json?status=unfulfilled`;
+    const ordersRes = await axios.get(ordersUrl, { headers });
+    const shopifyOrder = ordersRes.data.orders.find(order => order.tags.includes(pkg.orderNumber.toString()));
+
+    if (!shopifyOrder) {
+      console.log(`⚠️ Shopify'da ${pkg.orderNumber} etiketli açık sipariş bulunamadı.`);
+      return;
+    }
+
+    const foUrl = `https://${SHOPIFY_STORE_URL}/admin/api/2024-01/orders/${shopifyOrder.id}/fulfillment_orders.json`;
+    const foRes = await axios.get(foUrl, { headers });
+    const fulfillmentOrder = foRes.data.fulfillment_orders.find(fo => fo.status === 'open' || fo.status === 'in_progress');
+
+    if (!fulfillmentOrder) {
+      console.log(`⚠️ Shopify Sipariş ID: ${shopifyOrder.id} için uygun fulfillment kaydı yok.`);
+      return;
+    }
+
+    const trackingCompany = pkg.cargoProviderName || 'Kargo Firması';
+    const trackingNumber = pkg.cargoTrackingNumber || pkg.cargoTrackingLink || 'Bilinmiyor';
+
+    const fulfillData = {
+      fulfillment: {
+        message: "Trendyol siparişi kargoya verildi.",
+        notify_customer: false, // <-- MAİL ATILMASI ENGELLENDİ
+        tracking_info: {
+          number: trackingNumber,
+          company: trackingCompany
+        },
+        line_items_by_fulfillment_order: [
+          { fulfillment_order_id: fulfillmentOrder.id }
+        ]
+      }
+    };
+
+    await axios.post(fulfillUrl, fulfillData, { headers });
+    console.log(`✅ Sipariş kargolandı olarak işaretlendi (Mail gönderilmedi). Shopify ID: ${shopifyOrder.id}`);
+    
+  } catch (error) {
+    console.error(`❌ Kargo güncellemesi başarısız oldu:`, JSON.stringify(error.response?.data || error.message, null, 2));
   }
 }
 
